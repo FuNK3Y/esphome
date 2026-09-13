@@ -254,7 +254,7 @@ void IT8951Display::advance_phase_() {
       // RAM holds whatever was in it at power-on, and there is no framebuffer
       // to fill. Runs before the IDLE transition so the pending update it marks
       // is picked up by the advance_phase_ below.
-      this->on_initialised_();
+      this->on_initialised();
       this->set_phase_(Phase::IDLE);
       this->advance_phase_();
       break;
@@ -269,7 +269,7 @@ void IT8951Display::advance_phase_() {
         return;
       }
       this->active_mode_ = mode;
-      if (!this->needs_transfer_()) {
+      if (!this->needs_transfer()) {
         // Direct draw: the pixels were streamed into controller RAM as they
         // were drawn, so go straight to the waveform.
         this->set_phase_(Phase::UPDATE_REFRESH);
@@ -282,7 +282,7 @@ void IT8951Display::advance_phase_() {
     }
 
     case Phase::UPDATE_TRANSFER:
-      this->on_transfer_done_();
+      this->on_transfer_done();
       this->set_phase_(Phase::UPDATE_REFRESH);
       this->enqueue_update_refresh_();
       break;
@@ -341,10 +341,10 @@ void IT8951Display::setup() {
   // those writes would dereference a null pointer and crash.
   //
   // The direct-draw subclass has no framebuffer: it streams into controller RAM
-  // instead, and clears that RAM from on_initialised_() once the handshake is
-  // done. Its needs_transfer_() is false, so nothing reads buffer_.
+  // instead, and clears that RAM from on_initialised() once the handshake is
+  // done. Its needs_transfer() is false, so nothing reads buffer_.
   this->row_width_ = this->compute_row_width_();
-  if (this->needs_transfer_()) {
+  if (this->needs_transfer()) {
     this->buffer_length_ = static_cast<size_t>(this->row_width_) * static_cast<size_t>(this->height_);
     RAMAllocator<uint8_t> allocator{};
     this->buffer_ = allocator.allocate(this->buffer_length_);
@@ -637,7 +637,7 @@ bool IT8951Display::op_xfer_rows_() {
   // the buffer already holds the wire bytes — so stream it straight to SPI with
   // no per-pixel packing or temporary buffer.
   while (this->transfer_row_ < area_h) {
-    this->write_array(this->transfer_row_data_(this->transfer_row_), bytes_per_row);
+    this->write_array(this->transfer_row_data(this->transfer_row_), bytes_per_row);
     this->transfer_row_++;
     if (millis() - start_time >= MAX_TRANSFER_TIME_MS)
       break;
@@ -647,7 +647,7 @@ bool IT8951Display::op_xfer_rows_() {
   return this->transfer_row_ >= area_h;
 }
 
-const uint8_t *IT8951Display::transfer_row_data_(uint16_t row) const {
+const uint8_t *IT8951Display::transfer_row_data(uint16_t row) const {
   const uint16_t row_x_bytes =
       this->grayscale_ ? static_cast<uint16_t>(this->area_x_ >> 1) : static_cast<uint16_t>(this->area_x_ >> 3);
   const uint32_t offset = (static_cast<uint32_t>(this->area_y_) + row) * this->row_width_ + row_x_bytes;
@@ -1191,7 +1191,7 @@ void IT8951DirectDisplay::setup() {
   IT8951Display::setup();
 }
 
-void IT8951DirectDisplay::on_initialised_() {
+void IT8951DirectDisplay::on_initialised() {
   // Controller image RAM holds whatever survived power-on and there is no
   // framebuffer standing in for it, so clear it before the first waveform can
   // present undrawn regions as garbage.
@@ -1392,11 +1392,6 @@ void HOT IT8951DirectDisplay::draw_pixels_at(int x_start, int y_start, int w, in
 
   if (!this->prepare_direct_write_())
     return;
-
-  // Logging the rectangle LVGL asked for alongside the one finally presented
-  // (see prepare_update_region_) is how you tell an over-wide refresh caused by
-  // a parent-container invalidation from one caused by the 32-pixel X snap.
-  ESP_LOGV(TAG, "Flush %dx%d@%d,%d -> native %dx%d@%d,%d", w, h, x_start, y_start, clipped_w, clipped_h, cx, cy);
 
   const size_t line_stride = static_cast<size_t>(x_offset) + w + x_pad;
   this->write_area_(static_cast<uint16_t>(cx), static_cast<uint16_t>(cy), static_cast<uint16_t>(clipped_w),

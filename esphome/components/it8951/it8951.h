@@ -304,13 +304,13 @@ class IT8951Display : public Display,
   // True when the current update has to stream pixel data to the controller.
   // The direct-draw subclass has already written the image as LVGL flushed it,
   // so it only needs the transfer phase for whole-screen constant fills.
-  virtual bool needs_transfer_() const { return true; }
+  virtual bool needs_transfer() const { return true; }
   // Source bytes for one row of the current update area, in native wire format.
-  virtual const uint8_t *transfer_row_data_(uint16_t row) const;
+  virtual const uint8_t *transfer_row_data(uint16_t row) const;
   // Called once the controller handshake has completed and initialised_ is set.
-  virtual void on_initialised_() {}
+  virtual void on_initialised() {}
   // Called when the transfer phase has streamed its last row.
-  virtual void on_transfer_done_() {}
+  virtual void on_transfer_done() {}
 
   bool prepare_update_region_(UpdateMode &mode);
 
@@ -466,10 +466,10 @@ class IT8951DirectDisplay : public IT8951Display {
  protected:
   // Only a whole-screen constant fill needs the streaming transfer phase; a
   // normal update's pixels are already in controller RAM.
-  bool needs_transfer_() const override { return this->fill_pending_; }
-  const uint8_t *transfer_row_data_(uint16_t row) const override { return this->fill_row_.get(); }
-  void on_initialised_() override;
-  void on_transfer_done_() override { this->fill_pending_ = false; }
+  bool needs_transfer() const override { return this->fill_pending_; }
+  const uint8_t *transfer_row_data(uint16_t row) const override { return this->fill_row_.get(); }
+  void on_initialised() override;
+  void on_transfer_done() override { this->fill_pending_ = false; }
 
   // Stream one flush rectangle, already in native panel coordinates and
   // already alignment-checked, into controller image RAM.
