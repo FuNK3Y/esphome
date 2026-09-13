@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -222,9 +223,13 @@ class IT8951Display : public Display,
   // Bytes per row for the configured pixel format: 4bpp grayscale packs two
   // pixels per byte; monochrome packs eight bits per byte, rounded up to a
   // whole 16-pixel group (matching the controller's 8bpp-load / 1bpp trick).
-  uint16_t compute_row_width_() const {
-    return this->grayscale_ ? static_cast<uint16_t>((static_cast<uint32_t>(this->width_) + 1) / 2)
-                            : static_cast<uint16_t>(((static_cast<uint32_t>(this->width_) + 15) / 16) * 2);
+  uint16_t compute_row_width_() const { return this->row_bytes_for_(this->width_); }
+  // Bytes needed to hold `pixels` pixels in the configured native format. The
+  // direct-draw path uses this for a single flush rectangle's row, the buffered
+  // path for a full framebuffer row.
+  uint16_t row_bytes_for_(uint16_t pixels) const {
+    return this->grayscale_ ? static_cast<uint16_t>((static_cast<uint32_t>(pixels) + 1) / 2)
+                            : static_cast<uint16_t>(((static_cast<uint32_t>(pixels) + 15) / 16) * 2);
   }
   void set_mono_pixel_(uint16_t x, uint16_t y, bool value) const;
   // Write a 4bpp grayscale nibble into the framebuffer (two pixels per byte).
@@ -267,6 +272,22 @@ class IT8951Display : public Display,
   void enqueue_update_transfer_();
   void enqueue_update_refresh_();
   void enqueue_update_sleep_();
+  // Wake the controller if a previous update put it to sleep. Both the transfer
+  // and (when there is no transfer) the refresh phase must do this before
+  // touching the display engine.
+  void enqueue_wake_if_asleep_();
+
+  // --- Framebuffer hooks (overridden by the direct-draw subclass) ---
+  // True when the current update has to stream pixel data to the controller.
+  // The direct-draw subclass has already written the image as LVGL flushed it,
+  // so it only needs the transfer phase for whole-screen constant fills.
+  virtual bool needs_transfer_() const { return true; }
+  // Source bytes for one row of the current update area, in native wire format.
+  virtual const uint8_t *transfer_row_data_(uint16_t row) const;
+  // Called once the controller handshake has completed and initialised_ is set.
+  virtual void on_initialised_() {}
+  // Called when the transfer phase has streamed its last row.
+  virtual void on_transfer_done_() {}
 
   bool prepare_update_region_(UpdateMode &mode);
 
@@ -348,6 +369,58 @@ class IT8951Display : public Display,
   // read after reset; the original driver retried up to 3 times with 100ms
   // between attempts).
   uint8_t dev_info_attempts_{0};
+};
+
+// --- Direct-draw variant ------------------------------------------------------
+// Writes pixels straight into the controller's image RAM as they are drawn,
+// with no ESP-side framebuffer: each LVGL flush is converted to the native wire
+// format and streamed as its own LD_IMG_AREA load. On a 1872x1404 panel this
+// reclaims ~1.25 MiB of PSRAM.
+//
+// Only usable when every writer pushes rectangles (LVGL) rather than individual
+// pixels in arbitrary order, so display.py selects it exactly when the display
+// has no lambda/pages/test-card writer. Rotation is LVGL's job here (the driver
+// advertises has_hardware_rotation=false); only the panel's mirror_x/mirror_y
+// transform is applied, which costs nothing in the packing loop.
+class IT8951DirectDisplay : public IT8951Display {
+ public:
+  using IT8951Display::IT8951Display;
+
+  void setup() override;
+  void fill(Color color) override;
+  // Single-pixel drawing cannot be streamed; the config never routes a
+  // per-pixel writer to this class (see display.py).
+  void draw_pixel_at(int /*x*/, int /*y*/, Color /*color*/) override {}
+  void draw_pixels_at(int x_start, int y_start, int w, int h, const uint8_t *ptr, ColorOrder order,
+                      ColorBitness bitness, bool big_endian, int x_offset, int y_offset, int x_pad) override;
+
+ protected:
+  // Only a whole-screen constant fill needs the streaming transfer phase; a
+  // normal update's pixels are already in controller RAM.
+  bool needs_transfer_() const override { return this->fill_pending_; }
+  const uint8_t *transfer_row_data_(uint16_t row) const override { return this->fill_row_.get(); }
+  void on_initialised_() override;
+  void on_transfer_done_() override { this->fill_pending_ = false; }
+
+  // Stream one flush rectangle, already in native panel coordinates and
+  // already alignment-checked, into controller image RAM.
+  void write_area_(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const uint8_t *ptr, ColorOrder order,
+                   ColorBitness bitness, bool big_endian, size_t line_stride, int x_offset, int y_offset,
+                   bool mirror_x, bool mirror_y);
+  // Pack one native row of a flush rectangle into row_buf_.
+  void pack_row_(uint16_t native_x, uint16_t native_y, uint16_t w, const uint8_t *ptr, ColorOrder order,
+                 ColorBitness bitness, bool big_endian, size_t source_index, bool mirror_x);
+  // Bring the controller out of sleep before a direct write. Returns false if
+  // the controller is not in a state that can accept pixel data.
+  bool prepare_direct_write_();
+
+  // One native-format row of the widest possible flush rectangle.
+  std::unique_ptr<uint8_t[]> row_buf_;
+  // Constant row used by the whole-screen fill path.
+  std::unique_ptr<uint8_t[]> fill_row_;
+  bool fill_pending_{false};
+  // Logged once so a misconfigured panel doesn't flood the log every flush.
+  bool alignment_warned_{false};
 };
 
 // --- Automation action ---

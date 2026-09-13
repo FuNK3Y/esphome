@@ -61,6 +61,7 @@ VCOM_REGISTER_OPTIONS = (VCOM_REGISTER_DEFAULT, VCOM_REGISTER_ALT)
 
 it8951_ns = cg.esphome_ns.namespace("it8951")
 IT8951Display = it8951_ns.class_("IT8951Display", display.Display, spi.SPIDevice)
+IT8951DirectDisplay = it8951_ns.class_("IT8951DirectDisplay", IT8951Display)
 IT8951UpdateAction = it8951_ns.class_("IT8951UpdateAction", automation.Action)
 
 # Hardware waveform modes exposed to YAML. Strings are mapped to the C++
@@ -184,6 +185,19 @@ DIMENSION_SCHEMA = cv.Schema(
         cv.Required(CONF_HEIGHT): cv.int_,
     }
 )
+
+
+def _has_writer(config: ConfigType) -> bool:
+    """True when a writer draws into this display pixel-by-pixel.
+
+    A lambda, pages or the test card all call draw_pixel_at in arbitrary order,
+    which cannot be streamed to the controller as it happens, so those configs
+    need the buffered class. Everything else (i.e. LVGL, which pushes whole
+    rectangles) can be drawn directly into controller RAM.
+    """
+    return any(
+        config.get(key) for key in (CONF_LAMBDA, CONF_PAGES, CONF_SHOW_TEST_CARD)
+    )
 
 
 def _model_pin_option(
@@ -315,18 +329,22 @@ def _customise_schema(config: ConfigType) -> ConfigType:
     model = IT8951Model.models[config[CONF_MODEL].upper()]
     width, height = model.get_dimensions(model_config)
 
+    has_writer = _has_writer(model_config)
     display.add_metadata(
         model_config[CONF_ID],
         width,
         height,
-        # Rotation is applied per-pixel in draw_pixel_at at no extra cost, so we
-        # advertise hardware rotation: LVGL routes its rotation to the driver via
-        # set_rotation rather than rotating the framebuffer in software.
-        has_hardware_rotation=True,
-        has_writer=any(
-            model_config.get(key)
-            for key in (CONF_LAMBDA, CONF_PAGES, CONF_SHOW_TEST_CARD)
-        ),
+        # With a framebuffer, rotation is applied per-pixel in draw_pixel_at at no
+        # extra cost, so we advertise hardware rotation and LVGL routes its
+        # rotation to the driver via set_rotation. The direct-draw variant has no
+        # framebuffer to rotate through — transposing a flush rectangle would need
+        # a chunk-sized scratch buffer, which is exactly what LVGL's own software
+        # (or ESP32-P4 PPA) rotation already provides — so it leaves rotation to
+        # LVGL. Where there is no writer and no LVGL, _final_validate turns on the
+        # test card, making this buffered again; nothing reads the flag in that
+        # case since only LVGL consults it.
+        has_hardware_rotation=has_writer,
+        has_writer=has_writer,
         # Report the configured rotation so LVGL can detect (and reject) a
         # rotation set in the display config instead of the LVGL config.
         rotation=model_config.get(CONF_ROTATION, 0),
@@ -350,7 +368,7 @@ def _final_validate(config: ConfigType) -> None:
     )
 
     global_config = full_config.get()
-    from esphome.components.lvgl import DOMAIN as LVGL_DOMAIN
+    from esphome.components.lvgl import DOMAIN as LVGL_DOMAIN, defines as lv_defines
 
     if CONF_LAMBDA not in config and CONF_PAGES not in config:
         if LVGL_DOMAIN in global_config:
@@ -358,6 +376,36 @@ def _final_validate(config: ConfigType) -> None:
                 config[CONF_UPDATE_INTERVAL] = update_interval("never")
         else:
             config[CONF_SHOW_TEST_CARD] = True
+
+    # Everything below applies only to the direct-draw variant, which is chosen
+    # (in to_code) exactly when nothing writes pixel-by-pixel.
+    if _has_writer(config):
+        return
+
+    transform = config.get(CONF_TRANSFORM)
+    if transform is not None and transform.get(CONF_SWAP_XY):
+        raise cv.Invalid(
+            "'swap_xy' is not supported without a framebuffer. Rotate in the LVGL "
+            "config instead, or add a 'lambda:' to use the buffered driver.",
+            [CONF_TRANSFORM, CONF_SWAP_XY],
+        )
+
+    # Direct draw writes into the controller's image memory as LVGL flushes. If
+    # LVGL renders while a waveform is in flight, it overwrites the image the
+    # panel is still drawing from. LVGL's update_when_display_idle withholds
+    # rendering until the display reports idle, and drives the refresh once the
+    # render completes, which closes both directions of that race.
+    display_id = config[CONF_ID]
+    for lvgl_config in global_config.get(LVGL_DOMAIN, []):
+        if display_id not in lvgl_config.get(lv_defines.CONF_DISPLAYS, []):
+            continue
+        if not lvgl_config.get(lv_defines.CONF_UPDATE_WHEN_DISPLAY_IDLE):
+            raise cv.Invalid(
+                f"The lvgl component driving '{display_id}' must set "
+                "'update_when_display_idle: true'. Without a framebuffer, LVGL "
+                "would write into the controller's image memory while the panel "
+                "is still refreshing from it."
+            )
 
 
 FINAL_VALIDATE_SCHEMA = _final_validate
@@ -367,7 +415,12 @@ async def to_code(config: ConfigType) -> None:
     model = IT8951Model.models[config[CONF_MODEL]]
     width, height = model.get_dimensions(config)
 
-    var = cg.new_Pvariable(config[CONF_ID], model.name, width, height)
+    # No writer means every draw arrives as a rectangle (LVGL), which can be
+    # streamed straight into controller RAM instead of through a ~1.25 MiB
+    # framebuffer. See _has_writer.
+    var_id = config[CONF_ID]
+    var_id.type = IT8951Display if _has_writer(config) else IT8951DirectDisplay
+    var = cg.new_Pvariable(var_id, model.name, width, height)
     await display.register_display(var, config)
     await spi.register_spi_device(var, config, write_only=False)
 
