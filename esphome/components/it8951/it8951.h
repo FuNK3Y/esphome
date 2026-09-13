@@ -194,6 +194,24 @@ class IT8951Display : public Display,
   // --- Display API ---
   void update() override;
   void update_mode(UpdateMode mode);
+
+  // --- Deferred presentation ---
+  // Only a waveform changes what the panel shows, so pixels can keep streaming
+  // into the controller's image memory while the previous frame stays on the
+  // glass. Pausing holds back the waveform: update requests are remembered
+  // rather than run, and resuming presents the result in one go.
+  //
+  // Note the frame is torn while paused — image memory holds part of the old
+  // frame and part of the new one — so nothing else may present it until the
+  // composition is finished. That is why update requests are swallowed rather
+  // than queued: on a panel this size there is no room in controller RAM for a
+  // second frame to compose into.
+  void set_refresh_paused(bool paused);
+  bool is_refresh_paused() const { return this->refresh_paused_; }
+  // Present the whole screen from controller image memory, clearing any pause.
+  // Nothing is transferred: this shows whatever was last written, which is the
+  // point of composing while paused.
+  void refresh_now(UpdateMode mode);
   DisplayType get_display_type() override { return this->grayscale_ ? DISPLAY_TYPE_GRAYSCALE : DISPLAY_TYPE_BINARY; }
   void fill(Color color) override;
   void clear() override { this->fill(Color::WHITE); }
@@ -308,6 +326,10 @@ class IT8951Display : public Display,
   // Pending update bookkeeping
   bool update_pending_{false};
   UpdateMode pending_update_mode_{UPDATE_MODE_NONE};
+  // Deferred presentation (see set_refresh_paused).
+  bool refresh_paused_{false};
+  bool paused_present_pending_{false};
+  UpdateMode paused_mode_{UPDATE_MODE_NONE};
   UpdateMode active_mode_{UPDATE_MODE_NONE};
   uint16_t area_x_{0}, area_y_{0}, area_w_{0}, area_h_{0};
   uint16_t transfer_row_{0};
@@ -369,6 +391,38 @@ class IT8951Display : public Display,
   // read after reset; the original driver retried up to 3 times with 100ms
   // between attempts).
   uint8_t dev_info_attempts_{0};
+};
+
+// it8951.pause / it8951.resume — hold back the waveform while a frame is
+// composed into controller memory, then present it.
+template<typename... Ts> class IT8951PauseAction : public Action<Ts...> {
+ public:
+  explicit IT8951PauseAction(IT8951Display *display) : display_(display) {}
+
+ protected:
+  void play(const Ts &...x) override { this->display_->set_refresh_paused(true); }
+
+  IT8951Display *display_;
+};
+
+template<typename... Ts> class IT8951ResumeAction : public Action<Ts...> {
+ public:
+  explicit IT8951ResumeAction(IT8951Display *display) : display_(display) {}
+  TEMPLATABLE_VALUE(UpdateMode, mode)
+
+ protected:
+  void play(const Ts &...x) override {
+    // With an explicit mode, present the whole screen from controller memory
+    // regardless of what was drawn; without one, present only what an update
+    // request asked for while paused.
+    if (this->mode_.has_value()) {
+      this->display_->refresh_now(this->mode_.value(x...));
+    } else {
+      this->display_->set_refresh_paused(false);
+    }
+  }
+
+  IT8951Display *display_;
 };
 
 // --- Direct-draw variant ------------------------------------------------------

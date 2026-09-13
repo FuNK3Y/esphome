@@ -780,7 +780,47 @@ void IT8951Display::reset_dirty_region_() {
   this->y_high_ = 0;
 }
 
+void IT8951Display::set_refresh_paused(bool paused) {
+  if (paused == this->refresh_paused_)
+    return;
+  this->refresh_paused_ = paused;
+  ESP_LOGD(TAG, "Refresh %s", paused ? "paused" : "resumed");
+  if (paused || !this->paused_present_pending_)
+    return;
+  // Present what was composed while paused.
+  this->paused_present_pending_ = false;
+  const UpdateMode mode = this->paused_mode_;
+  this->paused_mode_ = UPDATE_MODE_NONE;
+  this->start_update_(mode);
+}
+
+void IT8951Display::refresh_now(UpdateMode mode) {
+  if (!this->initialised_)
+    return;
+  if (mode == UPDATE_MODE_NONE)
+    mode = UPDATE_MODE_GC16;
+  // Mark the whole panel dirty so prepare_update_region_ yields a full-screen
+  // area. Direct draw has nothing to transfer, so this is a waveform only; the
+  // buffered class re-streams its framebuffer, which is equally correct.
+  this->x_low_ = 0;
+  this->y_low_ = 0;
+  this->x_high_ = this->width_;
+  this->y_high_ = this->height_;
+  this->refresh_paused_ = false;
+  this->paused_present_pending_ = false;
+  this->paused_mode_ = UPDATE_MODE_NONE;
+  this->start_update_(mode);
+}
+
 void IT8951Display::start_update_(UpdateMode mode) {
+  if (this->refresh_paused_) {
+    // Remember the request; the dirty region keeps accumulating because we
+    // never reach prepare_update_region_, which is what resets it.
+    this->paused_present_pending_ = true;
+    this->paused_mode_ = mode;
+    ESP_LOGV(TAG, "Update deferred (refresh paused), mode=%u", static_cast<unsigned>(mode));
+    return;
+  }
   if (this->phase_ == Phase::IDLE && this->initialised_) {
     this->update_started_at_ = millis();
     this->active_mode_ = mode;

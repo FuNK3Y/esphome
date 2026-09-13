@@ -64,3 +64,16 @@ lvgl:
       - label:
           align: CENTER
           text: "Rotated"
+
+# Deferred presentation: compose the next frame into controller memory while
+# the current one stays on the panel, then present it with one waveform.
+interval:
+  - interval: 60s
+    then:
+      - it8951.pause: direct_gray
+      - lambda: lv_refr_now(nullptr);
+      - it8951.resume:
+          id: direct_gray
+          mode: GC16
+      - it8951.pause: direct_mono
+      - it8951.resume: direct_mono
