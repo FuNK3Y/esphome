@@ -202,9 +202,6 @@ class IT8951Display : public Display,
   // of render + transfer + waveform.
   void load_buffer();
   void refresh_full(UpdateMode mode);
-  // True when no update is in progress or pending — i.e. buffer_ is not
-  // being streamed and may be re-rendered (e.g. to preload another page).
-  bool is_idle() const { return this->phase_ == Phase::IDLE && !this->update_pending_; }
   DisplayType get_display_type() override { return this->grayscale_ ? DISPLAY_TYPE_GRAYSCALE : DISPLAY_TYPE_BINARY; }
   void fill(Color color) override;
   void clear() override { this->fill(Color::WHITE); }
