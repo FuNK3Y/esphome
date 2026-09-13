@@ -3,6 +3,7 @@ ESPHome configuration for the IT8951 e-paper controller.
 """
 
 from collections.abc import Callable
+import logging
 from typing import Any
 
 from esphome import automation, core, pins
@@ -40,6 +41,8 @@ from esphome.core import ID
 from esphome.cpp_generator import MockObj, RawExpression, TemplateArgsType
 from esphome.final_validate import full_config
 from esphome.types import ConfigType
+
+_LOGGER = logging.getLogger(__name__)
 
 AUTO_LOAD = ["split_buffer"]
 DEPENDENCIES = ["spi"]
@@ -392,21 +395,29 @@ def _final_validate(config: ConfigType) -> None:
             [CONF_TRANSFORM, CONF_SWAP_XY],
         )
 
-    # Direct draw writes into the controller's image memory as LVGL flushes. If
-    # LVGL renders while a waveform is in flight, it overwrites the image the
-    # panel is still drawing from. LVGL's update_when_display_idle withholds
-    # rendering until the display reports idle, and drives the refresh once the
-    # render completes, which closes both directions of that race.
+    # Direct draw writes into the controller's image memory as LVGL flushes, so a
+    # render started while a waveform is in flight overwrites the image the panel
+    # is still drawing from; the driver logs and drops such a flush.
+    #
+    # 'update_when_display_idle' avoids it by withholding rendering until the
+    # display reports idle. It is not required, because it also presents at every
+    # render end with the display's default mode, which rules out both choosing a
+    # waveform per update and composing a frame ahead of time; a config that
+    # instead renders explicitly can gate on is_idle() itself and keep that
+    # control. Warn rather than fail, since neither shape is detectable here.
     display_id = config[CONF_ID]
     for lvgl_config in global_config.get(LVGL_DOMAIN, []):
         if display_id not in lvgl_config.get(lv_defines.CONF_DISPLAYS, []):
             continue
         if not lvgl_config.get(lv_defines.CONF_UPDATE_WHEN_DISPLAY_IDLE):
-            raise cv.Invalid(
-                f"The lvgl component driving '{display_id}' must set "
-                "'update_when_display_idle: true'. Without a framebuffer, LVGL "
-                "would write into the controller's image memory while the panel "
-                "is still refreshing from it."
+            _LOGGER.warning(
+                "Display '%s' has no framebuffer, so LVGL writes straight into the "
+                "controller's image memory. Either set 'update_when_display_idle: "
+                "true' on the lvgl component, or make sure anything calling "
+                "lv_refr_now() waits for id(%s).is_idle() first — otherwise a "
+                "render landing mid-waveform is dropped.",
+                display_id,
+                display_id,
             )
 
 
