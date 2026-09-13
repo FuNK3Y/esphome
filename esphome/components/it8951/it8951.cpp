@@ -1132,27 +1132,37 @@ void IT8951Display::dump_config() {
     strncpy(force_temperature, "(controller default)", sizeof(force_temperature));
     force_temperature[sizeof(force_temperature) - 1] = '\0';
   }
-  ESP_LOGCONFIG(
-      TAG,
-      "  Model preset: %s"
-      "\n  Dimensions: %dx%d"
-      "\n  Buffer: %u bytes"
-      "\n  Image buffer addr: 0x%04X%04X"
-      "\n  VCOM: %.02fV (set selector 0x%04X)"
-      "\n  Force temperature: %s"
-      "\n  Display command: %s"
-      "\n  Sleep when done: %s"
-      "\n  Full update every: %u"
-      "\n  Inverted colors: %s"
-      "\n  Pixel format: %s"
-      "\n  Reset duration: %" PRIu32 "ms",
-      this->name_ != nullptr ? this->name_ : LOG_STR_LITERAL("(unknown)"), this->get_width_internal(),
-      this->get_height_internal(), static_cast<unsigned>(this->buffer_length_), this->img_buf_addr_h_,
-      this->img_buf_addr_l_, static_cast<float>(this->vcom_) / 1000.0f, this->vcom_register_, force_temperature,
-      this->use_legacy_dpy_area_ ? LOG_STR_LITERAL("DPY_AREA (0x0034, legacy)")
-                                 : LOG_STR_LITERAL("DPY_BUF_AREA (0x0037)"),
-      YESNO(this->sleep_when_done_), this->full_update_every_, YESNO(this->invert_colors_),
-      this->grayscale_ ? LOG_STR_LITERAL("4bpp grayscale") : LOG_STR_LITERAL("1bpp monochrome"), this->reset_duration_);
+  // buffer_length_ is sized from the geometry in the constructor whether or not
+  // anything is allocated, so report what actually exists: the direct-draw
+  // variant streams into controller memory and has no framebuffer at all.
+  char framebuffer[24];
+  if (this->buffer_ != nullptr) {
+    snprintf(framebuffer, sizeof(framebuffer), "%u bytes", static_cast<unsigned>(this->buffer_length_));
+  } else {
+    strncpy(framebuffer, "none (direct draw)", sizeof(framebuffer));
+    framebuffer[sizeof(framebuffer) - 1] = '\0';
+  }
+  ESP_LOGCONFIG(TAG,
+                "  Model preset: %s"
+                "\n  Dimensions: %dx%d"
+                "\n  Framebuffer: %s"
+                "\n  Image buffer addr: 0x%04X%04X"
+                "\n  VCOM: %.02fV (set selector 0x%04X)"
+                "\n  Force temperature: %s"
+                "\n  Display command: %s"
+                "\n  Sleep when done: %s"
+                "\n  Full update every: %u"
+                "\n  Inverted colors: %s"
+                "\n  Pixel format: %s"
+                "\n  Reset duration: %" PRIu32 "ms",
+                this->name_ != nullptr ? this->name_ : LOG_STR_LITERAL("(unknown)"), this->get_width_internal(),
+                this->get_height_internal(), framebuffer, this->img_buf_addr_h_, this->img_buf_addr_l_,
+                static_cast<float>(this->vcom_) / 1000.0f, this->vcom_register_, force_temperature,
+                this->use_legacy_dpy_area_ ? LOG_STR_LITERAL("DPY_AREA (0x0034, legacy)")
+                                           : LOG_STR_LITERAL("DPY_BUF_AREA (0x0037)"),
+                YESNO(this->sleep_when_done_), this->full_update_every_, YESNO(this->invert_colors_),
+                this->grayscale_ ? LOG_STR_LITERAL("4bpp grayscale") : LOG_STR_LITERAL("1bpp monochrome"),
+                this->reset_duration_);
   LOG_PIN("  Reset Pin: ", this->reset_pin_);
   LOG_PIN("  Busy Pin: ", this->busy_pin_);
   LOG_PIN("  CS Pin: ", this->cs_);
