@@ -354,11 +354,14 @@ def _customise_schema(config: ConfigType) -> ConfigType:
         # Report the configured rotation so LVGL can detect (and reject) a
         # rotation set in the display config instead of the LVGL config.
         rotation=model_config.get(CONF_ROTATION, 0),
-        # The IT8951 snaps partial display refreshes to a 32-pixel X boundary
-        # (see prepare_update_region_), so have LVGL round its redraw areas to
-        # 32px too — this keeps flush rectangles aligned with what the panel
-        # actually refreshes and avoids redundant re-rounding/over-draw.
-        draw_rounding=32,
+        # What the hardware actually requires of a LOAD is a 4-pixel boundary in
+        # 4bpp, or 16 for the 8bpp-packed monochrome trick. The 32-pixel X snap
+        # that partial REFRESH needs is applied separately in
+        # prepare_update_region_ and only on X, so asking LVGL for 32 here would
+        # round both axes and inflate every redraw: a one-pixel text change would
+        # become 32x32 of converted pixels. 16 satisfies both pixel formats and
+        # survives mirroring (see _final_validate).
+        draw_rounding=16,
     )
 
     return model_config
@@ -388,7 +391,26 @@ def _final_validate(config: ConfigType) -> None:
     if _has_writer(config):
         return
 
+    # Mirroring maps a rectangle to width - x - w, so the panel width has to be a
+    # multiple of the load alignment for a LVGL-aligned rectangle to stay aligned.
+    # Every model preset satisfies this; a generic model with hand-entered
+    # dimensions need not, and would otherwise drop every flush at runtime.
     transform = config.get(CONF_TRANSFORM)
+    mirrored = transform is not None and (
+        transform.get(CONF_MIRROR_X) or transform.get(CONF_MIRROR_Y)
+    )
+    if mirrored:
+        model = IT8951Model.models[config[CONF_MODEL]]
+        width, _ = model.get_dimensions(config)
+        align = 4 if config[CONF_GRAYSCALE] else 16
+        if width % align:
+            raise cv.Invalid(
+                f"Width {width} must be a multiple of {align} to use 'transform' "
+                f"without a framebuffer. Remove the mirror, pick a width that is a "
+                f"multiple of {align}, or add a 'lambda:' to use the buffered driver.",
+                [CONF_DIMENSIONS],
+            )
+
     if transform is not None and transform.get(CONF_SWAP_XY):
         raise cv.Invalid(
             "'swap_xy' is not supported without a framebuffer. Rotate in the LVGL "

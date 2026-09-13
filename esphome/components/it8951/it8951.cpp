@@ -972,6 +972,19 @@ static uint8_t color_to_nibble(const Color &color) {
   return quantize_8bit_to_nibble(luma);
 }
 
+// Rec.601 luma straight from a 5/6/5 pixel, skipping the expansion to 8-bit
+// channels and the Color round-trip. The weights are the usual 0.299/0.587/0.114
+// pre-scaled so a full-white pixel lands on exactly 15, and the +2048 matches the
+// rounding quantize_8bit_to_nibble applies one byte further up.
+static inline uint8_t rgb565_to_nibble(uint16_t value) {
+  const uint32_t r = (value >> 11) & 0x1F;
+  const uint32_t g = (value >> 5) & 0x3F;
+  const uint32_t b = value & 0x1F;
+  const uint32_t luma = 634u * r + 607u * g + 239u * b;  // 0..65304
+  const uint8_t nibble = static_cast<uint8_t>((luma + 2048u) >> 12);
+  return nibble > 0x0F ? 0x0F : nibble;
+}
+
 // 4x4 ordered (Bayer) dither threshold over the weighted-luma range (0..65535).
 // A pixel whose luma is below the threshold renders black, so lighter pixels
 // produce progressively sparser black dots instead of vanishing to white. The
@@ -1238,6 +1251,31 @@ void HOT IT8951DirectDisplay::pack_row_(uint16_t native_x, uint16_t native_y, ui
                                         bool mirror_x, uint16_t source_w, uint16_t clip_left) {
   uint8_t *out = this->row_buf_.get();
   std::memset(out, 0, this->row_bytes_for_(w));
+
+  // LVGL is the only writer that reaches this class (anything drawing pixel by
+  // pixel routes to the buffered one), and it passes a compile-time-constant
+  // bitness with a fixed colour order and endianness. So for the whole flush the
+  // decode is one known shape: decide it once here rather than per pixel.
+  if (this->grayscale_ && bitness == COLOR_BITNESS_565 && order == COLOR_ORDER_RGB) {
+    const uint8_t *base = ptr + source_index * 2;
+    for (uint16_t c = 0; c < w; c++) {
+      const uint16_t column = static_cast<uint16_t>(clip_left + c);
+      const size_t i = (mirror_x ? static_cast<size_t>(source_w - 1 - column) : column) * 2;
+      const uint16_t value = big_endian ? static_cast<uint16_t>((static_cast<uint16_t>(base[i]) << 8) | base[i + 1])
+                                        : static_cast<uint16_t>(base[i] | (static_cast<uint16_t>(base[i + 1]) << 8));
+      uint8_t nibble = rgb565_to_nibble(value);
+      if (this->invert_colors_)
+        nibble = static_cast<uint8_t>(0x0F - nibble);
+      const uint16_t index = static_cast<uint16_t>(c >> 1);
+      if (c & 1) {
+        out[index] = static_cast<uint8_t>((out[index] & 0xF0) | nibble);
+      } else {
+        out[index] = static_cast<uint8_t>((out[index] & 0x0F) | (nibble << 4));
+      }
+    }
+    return;
+  }
+
   for (uint16_t c = 0; c < w; c++) {
     // Column c of the clipped rectangle is column clip_left + c of the source
     // rectangle, which in turn reads from the far end when mirrored in X.
