@@ -1215,12 +1215,14 @@ bool IT8951DirectDisplay::prepare_direct_write_() {
 
 void HOT IT8951DirectDisplay::pack_row_(uint16_t native_x, uint16_t native_y, uint16_t w, const uint8_t *ptr,
                                         ColorOrder order, ColorBitness bitness, bool big_endian, size_t source_index,
-                                        bool mirror_x) {
+                                        bool mirror_x, uint16_t source_w, uint16_t clip_left) {
   uint8_t *out = this->row_buf_.get();
   std::memset(out, 0, this->row_bytes_for_(w));
   for (uint16_t c = 0; c < w; c++) {
-    // Native column c reads back from source column (w-1-c) when mirrored in X.
-    const size_t src = source_index + (mirror_x ? static_cast<size_t>(w - 1 - c) : c);
+    // Column c of the clipped rectangle is column clip_left + c of the source
+    // rectangle, which in turn reads from the far end when mirrored in X.
+    const uint16_t column = static_cast<uint16_t>(clip_left + c);
+    const size_t src = source_index + (mirror_x ? static_cast<size_t>(source_w - 1 - column) : column);
     uint32_t color_value;
     switch (bitness) {
       case COLOR_BITNESS_565: {
@@ -1275,7 +1277,8 @@ void HOT IT8951DirectDisplay::pack_row_(uint16_t native_x, uint16_t native_y, ui
 
 void IT8951DirectDisplay::write_area_(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const uint8_t *ptr,
                                       ColorOrder order, ColorBitness bitness, bool big_endian, size_t line_stride,
-                                      int x_offset, int y_offset, bool mirror_x, bool mirror_y) {
+                                      int x_offset, int y_offset, bool mirror_x, bool mirror_y, uint16_t source_w,
+                                      uint16_t source_h, uint16_t clip_left, uint16_t clip_top) {
   // Point the load at the image buffer, then open one LD_IMG_AREA for this
   // rectangle. Unlike the buffered path (one area per update) direct draw opens
   // one per flush, since each flush is an independent rectangle.
@@ -1310,10 +1313,13 @@ void IT8951DirectDisplay::write_area_(uint16_t x, uint16_t y, uint16_t w, uint16
   wait_for_hardware_ready(this->busy_pin_);
   for (uint16_t row = 0; row < h; row++) {
     App.feed_wdt();
-    // Native row `row` reads back from source row (h-1-row) when mirrored in Y.
-    const size_t source_row = mirror_y ? static_cast<size_t>(h - 1 - row) : row;
+    // Row `row` of the clipped rectangle is row clip_top + row of the source
+    // rectangle, which reads from the far end when mirrored in Y.
+    const uint16_t line = static_cast<uint16_t>(clip_top + row);
+    const size_t source_row = mirror_y ? static_cast<size_t>(source_h - 1 - line) : line;
     const size_t source_index = (static_cast<size_t>(y_offset) + source_row) * line_stride + x_offset;
-    this->pack_row_(x, static_cast<uint16_t>(y + row), w, ptr, order, bitness, big_endian, source_index, mirror_x);
+    this->pack_row_(x, static_cast<uint16_t>(y + row), w, ptr, order, bitness, big_endian, source_index, mirror_x,
+                    source_w, clip_left);
     this->write_array(this->row_buf_.get(), bytes_per_row);
   }
   this->disable();
@@ -1338,20 +1344,28 @@ void HOT IT8951DirectDisplay::draw_pixels_at(int x_start, int y_start, int w, in
   // exactly what LVGL's own rotation already provides.
   const int nx = mirror_x ? this->width_ - x_start - w : x_start;
   const int ny = mirror_y ? this->height_ - y_start - h : y_start;
-  if (nx < 0 || ny < 0 || nx + w > this->width_ || ny + h > this->height_) {
-    ESP_LOGW(TAG, "Flush rect (%d,%d %dx%d) lies outside the panel", x_start, y_start, w, h);
+
+  // LVGL rounds redraw areas up to draw_rounding, and neither panel dimension
+  // is a multiple of 32 (1872 = 58.5*32, 1404 = 43.875*32), so the last stripe
+  // of a redraw always overhangs. Clip it rather than dropping the flush; the
+  // buffered path gets the same effect from its per-pixel bounds test.
+  const int clip_left = std::max(0, -nx);
+  const int clip_top = std::max(0, -ny);
+  const int clipped_w = std::min(nx + w, static_cast<int>(this->width_)) - std::max(nx, 0);
+  const int clipped_h = std::min(ny + h, static_cast<int>(this->height_)) - std::max(ny, 0);
+  if (clipped_w <= 0 || clipped_h <= 0)
     return;
-  }
+  const int cx = nx + clip_left;
+  const int cy = ny + clip_top;
 
   // The controller loads on a 4-pixel boundary in 4bpp, or a 16-pixel boundary
-  // for the 8bpp-packed monochrome trick. LVGL rounds redraw areas to
-  // draw_rounding (32, see display.py), and mirroring a 32-aligned rectangle on
-  // a 16-aligned panel width leaves it 16-aligned, so this should never trip.
+  // for the 8bpp-packed monochrome trick. Both panel widths are multiples of
+  // 16, so clipping a 32-aligned rectangle against them leaves it 16-aligned.
   const uint16_t align = this->grayscale_ ? 4 : 16;
-  if ((nx % align) != 0 || (w % align) != 0) {
+  if ((cx % align) != 0 || (clipped_w % align) != 0) {
     if (!this->alignment_warned_) {
       this->alignment_warned_ = true;
-      ESP_LOGE(TAG, "Flush rect x=%d w=%d is not %u-pixel aligned; dropping", nx, w, align);
+      ESP_LOGE(TAG, "Flush rect x=%d w=%d is not %u-pixel aligned; dropping", cx, clipped_w, align);
     }
     return;
   }
@@ -1360,15 +1374,16 @@ void HOT IT8951DirectDisplay::draw_pixels_at(int x_start, int y_start, int w, in
     return;
 
   const size_t line_stride = static_cast<size_t>(x_offset) + w + x_pad;
-  this->write_area_(static_cast<uint16_t>(nx), static_cast<uint16_t>(ny), static_cast<uint16_t>(w),
-                    static_cast<uint16_t>(h), ptr, order, bitness, big_endian, line_stride, x_offset, y_offset,
-                    mirror_x, mirror_y);
+  this->write_area_(static_cast<uint16_t>(cx), static_cast<uint16_t>(cy), static_cast<uint16_t>(clipped_w),
+                    static_cast<uint16_t>(clipped_h), ptr, order, bitness, big_endian, line_stride, x_offset, y_offset,
+                    mirror_x, mirror_y, static_cast<uint16_t>(w), static_cast<uint16_t>(h),
+                    static_cast<uint16_t>(clip_left), static_cast<uint16_t>(clip_top));
 
   // Accumulate the region the next waveform has to present.
-  this->x_low_ = clamp_at_most(this->x_low_, nx);
-  this->x_high_ = clamp_at_least(this->x_high_, nx + w);
-  this->y_low_ = clamp_at_most(this->y_low_, ny);
-  this->y_high_ = clamp_at_least(this->y_high_, ny + h);
+  this->x_low_ = clamp_at_most(this->x_low_, cx);
+  this->x_high_ = clamp_at_least(this->x_high_, cx + clipped_w);
+  this->y_low_ = clamp_at_most(this->y_low_, cy);
+  this->y_high_ = clamp_at_least(this->y_high_, cy + clipped_h);
 }
 
 }  // namespace esphome::it8951

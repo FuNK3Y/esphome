@@ -458,12 +458,16 @@ class IT8951DirectDisplay : public IT8951Display {
 
   // Stream one flush rectangle, already in native panel coordinates and
   // already alignment-checked, into controller image RAM.
+  // The rectangle passed here is the clipped one; source_w/source_h and
+  // clip_left/clip_top describe where it sits inside the caller's rectangle, so
+  // a mirrored axis still reads from the right end of the source.
   void write_area_(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const uint8_t *ptr, ColorOrder order,
                    ColorBitness bitness, bool big_endian, size_t line_stride, int x_offset, int y_offset, bool mirror_x,
-                   bool mirror_y);
+                   bool mirror_y, uint16_t source_w, uint16_t source_h, uint16_t clip_left, uint16_t clip_top);
   // Pack one native row of a flush rectangle into row_buf_.
   void pack_row_(uint16_t native_x, uint16_t native_y, uint16_t w, const uint8_t *ptr, ColorOrder order,
-                 ColorBitness bitness, bool big_endian, size_t source_index, bool mirror_x);
+                 ColorBitness bitness, bool big_endian, size_t source_index, bool mirror_x, uint16_t source_w,
+                 uint16_t clip_left);
   // Bring the controller out of sleep before a direct write. Returns false if
   // the controller is not in a state that can accept pixel data.
   bool prepare_direct_write_();
