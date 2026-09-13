@@ -206,7 +206,12 @@ class IT8951Display : public Display,
   // composition is finished. That is why update requests are swallowed rather
   // than queued: on a panel this size there is no room in controller RAM for a
   // second frame to compose into.
-  void set_refresh_paused(bool paused);
+  // Resuming presents whatever was requested while paused, using the region
+  // that accumulated across every render since. Passing a mode replaces the one
+  // the swallowed request carried, which is how a caller picks a waveform per
+  // present (DU for a tap, GC16 for a page change) even when something else —
+  // LVGL's update_when_display_idle, say — issued the request.
+  void set_refresh_paused(bool paused, UpdateMode mode = UPDATE_MODE_NONE);
   bool is_refresh_paused() const { return this->refresh_paused_; }
   // Present the whole screen from controller image memory, clearing any pause.
   // Nothing is transferred: this shows whatever was last written, which is the
@@ -412,14 +417,24 @@ template<typename... Ts> class IT8951ResumeAction : public Action<Ts...> {
 
  protected:
   void play(const Ts &...x) override {
-    // With an explicit mode, present the whole screen from controller memory
-    // regardless of what was drawn; without one, present only what an update
-    // request asked for while paused.
-    if (this->mode_.has_value()) {
-      this->display_->refresh_now(this->mode_.value(x...));
-    } else {
-      this->display_->set_refresh_paused(false);
-    }
+    this->display_->set_refresh_paused(false, this->mode_.has_value() ? this->mode_.value(x...) : UPDATE_MODE_NONE);
+  }
+
+  IT8951Display *display_;
+};
+
+// it8951.refresh — present the whole screen from controller memory, whatever is
+// in it, clearing any pause. Unlike resume this does not depend on an update
+// having been requested, which is what makes it the way to show a frame that was
+// composed earlier.
+template<typename... Ts> class IT8951RefreshAction : public Action<Ts...> {
+ public:
+  explicit IT8951RefreshAction(IT8951Display *display) : display_(display) {}
+  TEMPLATABLE_VALUE(UpdateMode, mode)
+
+ protected:
+  void play(const Ts &...x) override {
+    this->display_->refresh_now(this->mode_.has_value() ? this->mode_.value(x...) : UPDATE_MODE_NONE);
   }
 
   IT8951Display *display_;

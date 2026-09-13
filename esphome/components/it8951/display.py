@@ -68,6 +68,7 @@ IT8951DirectDisplay = it8951_ns.class_("IT8951DirectDisplay", IT8951Display)
 IT8951UpdateAction = it8951_ns.class_("IT8951UpdateAction", automation.Action)
 IT8951PauseAction = it8951_ns.class_("IT8951PauseAction", automation.Action)
 IT8951ResumeAction = it8951_ns.class_("IT8951ResumeAction", automation.Action)
+IT8951RefreshAction = it8951_ns.class_("IT8951RefreshAction", automation.Action)
 
 # Hardware waveform modes exposed to YAML. Strings are mapped to the C++
 # UpdateMode enum so the runtime can store the mode as a uint16_t rather
@@ -538,6 +539,31 @@ async def it8951_pause_action_to_code(
     synchronous=True,
 )
 async def it8951_resume_action_to_code(
+    config: ConfigType,
+    action_id: ID,
+    template_arg: cg.TemplateArguments,
+    args: TemplateArgsType,
+) -> MockObj:
+    display_var = await cg.get_variable(config[CONF_ID])
+    var = cg.new_Pvariable(action_id, template_arg, display_var)
+    if mode := config.get(CONF_MODE):
+        mode = await cg.templatable(mode, args, UpdateMode)
+        cg.add(var.set_mode(mode))
+    return var
+
+
+@automation.register_action(
+    "it8951.refresh",
+    IT8951RefreshAction,
+    automation.maybe_simple_id(
+        {
+            cv.Required(CONF_ID): cv.use_id(IT8951Display),
+            cv.Optional(CONF_MODE): cv.templatable(update_mode),
+        }
+    ),
+    synchronous=True,
+)
+async def it8951_refresh_action_to_code(
     config: ConfigType,
     action_id: ID,
     template_arg: cg.TemplateArguments,

@@ -73,8 +73,15 @@ interval:
     then:
       - it8951.pause: direct_gray
       - lambda: lv_refr_now(nullptr);
+      # Resume presents the accumulated region with the given waveform.
       - it8951.resume:
+          id: direct_gray
+          mode: DU
+      # Refresh presents the whole screen from controller memory, whether or not
+      # an update was requested while paused.
+      - it8951.refresh:
           id: direct_gray
           mode: GC16
       - it8951.pause: direct_mono
       - it8951.resume: direct_mono
+      - it8951.refresh: direct_mono

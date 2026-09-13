@@ -780,18 +780,28 @@ void IT8951Display::reset_dirty_region_() {
   this->y_high_ = 0;
 }
 
-void IT8951Display::set_refresh_paused(bool paused) {
-  if (paused == this->refresh_paused_)
+void IT8951Display::set_refresh_paused(bool paused, UpdateMode mode) {
+  if (paused) {
+    if (!this->refresh_paused_) {
+      this->refresh_paused_ = true;
+      ESP_LOGD(TAG, "Refresh paused");
+    }
     return;
-  this->refresh_paused_ = paused;
-  ESP_LOGD(TAG, "Refresh %s", paused ? "paused" : "resumed");
-  if (paused || !this->paused_present_pending_)
+  }
+  if (this->refresh_paused_) {
+    this->refresh_paused_ = false;
+    ESP_LOGD(TAG, "Refresh resumed");
+  }
+  if (!this->paused_present_pending_)
     return;
-  // Present what was composed while paused.
+  // Present what was composed while paused. An explicit mode replaces the one
+  // the swallowed request carried.
   this->paused_present_pending_ = false;
-  const UpdateMode mode = this->paused_mode_;
+  UpdateMode present = mode != UPDATE_MODE_NONE ? mode : this->paused_mode_;
   this->paused_mode_ = UPDATE_MODE_NONE;
-  this->start_update_(mode);
+  if (present == UPDATE_MODE_NONE)
+    present = UPDATE_MODE_GC16;
+  this->start_update_(present);
 }
 
 void IT8951Display::refresh_now(UpdateMode mode) {
