@@ -405,8 +405,8 @@ class IT8951DirectDisplay : public IT8951Display {
   // Stream one flush rectangle, already in native panel coordinates and
   // already alignment-checked, into controller image RAM.
   void write_area_(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const uint8_t *ptr, ColorOrder order,
-                   ColorBitness bitness, bool big_endian, size_t line_stride, int x_offset, int y_offset,
-                   bool mirror_x, bool mirror_y);
+                   ColorBitness bitness, bool big_endian, size_t line_stride, int x_offset, int y_offset, bool mirror_x,
+                   bool mirror_y);
   // Pack one native row of a flush rectangle into row_buf_.
   void pack_row_(uint16_t native_x, uint16_t native_y, uint16_t w, const uint8_t *ptr, ColorOrder order,
                  ColorBitness bitness, bool big_endian, size_t source_index, bool mirror_x);
