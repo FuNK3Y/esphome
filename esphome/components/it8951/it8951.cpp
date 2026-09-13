@@ -1393,6 +1393,11 @@ void HOT IT8951DirectDisplay::draw_pixels_at(int x_start, int y_start, int w, in
   if (!this->prepare_direct_write_())
     return;
 
+  // Logging the rectangle LVGL asked for alongside the one finally presented
+  // (see prepare_update_region_) is how you tell an over-wide refresh caused by
+  // a parent-container invalidation from one caused by the 32-pixel X snap.
+  ESP_LOGV(TAG, "Flush %dx%d@%d,%d -> native %dx%d@%d,%d", w, h, x_start, y_start, clipped_w, clipped_h, cx, cy);
+
   const size_t line_stride = static_cast<size_t>(x_offset) + w + x_pad;
   this->write_area_(static_cast<uint16_t>(cx), static_cast<uint16_t>(cy), static_cast<uint16_t>(clipped_w),
                     static_cast<uint16_t>(clipped_h), ptr, order, bitness, big_endian, line_stride, x_offset, y_offset,
